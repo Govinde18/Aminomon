@@ -19,22 +19,28 @@ import android.webkit.WebViewClient;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Hosts the offline web build of Aminomon (assets/www) in a WebView.
  *
- * The game runs Python (Pyodide) in a Web Worker that blocks on a
- * SharedArrayBuffer, which browsers only allow on "cross-origin isolated"
- * pages. WebView has no switch for that, so every request for our private
- * https origin is answered here, from the APK's assets, with the COOP/COEP
- * headers added. Nothing ever touches the network.
+ * The game runs Python (Pyodide) in a Web Worker. The game waits for key
+ * presses synchronously, and WebView cannot share memory between the page
+ * and the worker (no SharedArrayBuffer), so the worker asks this app instead:
+ * a synchronous request to https://HOST/__gv/wait is held here until the page
+ * pushes an input event through AndroidBridge.push(). Every other request is
+ * answered from the APK's assets. Nothing ever touches the network.
  */
 public class MainActivity extends Activity {
     private static final String HOST = "appassets.aminomon.local";
     private static final String ORIGIN = "https://" + HOST + "/";
     private WebView web;
+    private final LinkedBlockingQueue<String> events = new LinkedBlockingQueue<>();
+    private volatile int generation = 0;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -65,13 +71,19 @@ public class MainActivity extends Activity {
         w.setOnLongClickListener(v -> true);
         w.addJavascriptInterface(new Object() {
             @JavascriptInterface public void quit() { runOnUiThread(MainActivity.this::finish); }
+            @JavascriptInterface public void push(int type, int a, int b, int c) {
+                if (events.size() < 600) events.offer(type + "," + a + "," + b + "," + c);
+            }
+            @JavascriptInterface public void reset(int gen) { generation = gen; events.clear(); }
         }, "AndroidBridge");
         w.setWebChromeClient(new WebChromeClient());
         w.setWebViewClient(new WebViewClient() {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) {
                 if (!r.getUrl().getHost().equals(HOST)) return blocked();   // offline game: no other hosts
-                return serve(r.getUrl().getPath());
+                String p = r.getUrl().getPath();
+                if (p != null && p.startsWith("/__gv/")) return control(p, r.getUrl());
+                return serve(p);
             }
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) { return true; }
@@ -87,6 +99,33 @@ public class MainActivity extends Activity {
         return new WebResourceResponse("text/plain", "utf-8", 403, "Blocked", new HashMap<String, String>(), new java.io.ByteArrayInputStream(new byte[0]));
     }
 
+    /** Input channel for the game worker (see the class comment). */
+    private WebResourceResponse control(String path, android.net.Uri u) {
+        String body = "";
+        int ms = 0, g = -1;
+        try { ms = Integer.parseInt(u.getQueryParameter("ms")); } catch (Exception e) { /* none */ }
+        try { g = Integer.parseInt(u.getQueryParameter("g")); } catch (Exception e) { /* none */ }
+        try {
+            if (path.equals("/__gv/wait")) {
+                if (g == generation) {
+                    String s = events.poll(Math.max(0, Math.min(ms, 1000)), TimeUnit.MILLISECONDS);
+                    if (s != null) body = s;
+                } else {
+                    Thread.sleep(50);                       // an old worker: let it run out
+                }
+            } else if (path.equals("/__gv/sleep")) {
+                Thread.sleep(Math.max(0, Math.min(ms, 5000)));
+            } else if (path.equals("/__gv/flush")) {
+                ArrayList<String> all = new ArrayList<>();
+                events.drainTo(all);
+                for (String s : all) if (s.startsWith("3,")) { events.clear(); events.offer(s); }  // keep the latest resize
+            }
+        } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        Map<String, String> h = new HashMap<>();
+        h.put("Cache-Control", "no-store");
+        return new WebResourceResponse("text/plain", "utf-8", 200, "OK", h, new java.io.ByteArrayInputStream(body.getBytes()));
+    }
+
     private WebResourceResponse serve(String path) {
         if (path == null || path.equals("/") || path.isEmpty()) path = "/index.html";
         path = path.substring(1);
@@ -94,9 +133,6 @@ public class MainActivity extends Activity {
         try {
             InputStream in = getAssets().open("www/" + path);
             Map<String, String> h = new HashMap<>();
-            h.put("Cross-Origin-Opener-Policy", "same-origin");
-            h.put("Cross-Origin-Embedder-Policy", "require-corp");
-            h.put("Cross-Origin-Resource-Policy", "same-origin");
             h.put("Cache-Control", "no-cache");
             h.put("Access-Control-Allow-Origin", ORIGIN.substring(0, ORIGIN.length() - 1));
             String mime = mime(path);

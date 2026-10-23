@@ -177,10 +177,11 @@
   }
 
   // ------------------------------------------------------------ worker + input ring
-  let worker = null, sab = null, A = null, gen = 0;
+  let worker = null, sab = null, A = null, gen = 0, native = false;
   const K = { DOWN: 258, UP: 259, LEFT: 260, RIGHT: 261, BACKSPACE: 263, DC: 330, NPAGE: 338, PPAGE: 339, HOME: 262, END: 360 };
 
   function push(type, a, b, c) {
+    if (native) { try { window.AndroidBridge.push(type, a | 0, b | 0, c | 0); } catch (e) { /* ignore */ } return; }
     if (!A) return;
     const head = Atomics.load(A, 0), tail = Atomics.load(A, 1);
     if (head - tail >= N) return;
@@ -195,8 +196,8 @@
   const wheel = (x, y, up) => push(2, x, y, up ? 4 : 5);
 
   function sendSize() {
-    if (!A) return;
-    Atomics.store(A, 2, rows); Atomics.store(A, 3, cols);
+    if (!A && !native) return;
+    if (A) { Atomics.store(A, 2, rows); Atomics.store(A, 3, cols); }
     push(3, cols, rows, 0);
   }
 
@@ -206,9 +207,14 @@
     loader.classList.remove("hide"); stage.classList.remove("on");
     $("spin").style.display = ""; statusEl.classList.remove("err");
     statusEl.textContent = "Starting…";
-    sab = new SharedArrayBuffer(4 * (8 + N * 4));
-    A = new Int32Array(sab);
-    Atomics.store(A, 2, rows); Atomics.store(A, 3, cols);
+    if (native) {
+      sab = null; A = null;
+      try { window.AndroidBridge.reset(my); } catch (e) { /* ignore */ }
+    } else {
+      sab = new SharedArrayBuffer(4 * (8 + N * 4));
+      A = new Int32Array(sab);
+      Atomics.store(A, 2, rows); Atomics.store(A, 3, cols);
+    }
     const files = {};
     for (const k of store.keys()) if (k.startsWith("amn:f:")) files[k.slice(6)] = store.get(k);
     const lang = ((navigator.languages && navigator.languages[0]) || navigator.language || "en").replace("-", "_");
@@ -228,7 +234,7 @@
       }
     };
     worker.onerror = (e) => { if (my === gen) fail("The game could not start: " + (e.message || e)); };
-    worker.postMessage({ t: "init", sab, files, lang: lang + ".UTF-8" });
+    worker.postMessage({ t: "init", sab, rows, cols, gen: my, files, lang: lang + ".UTF-8" });
   }
   function showExit() {
     $("exit").classList.remove("hide");
@@ -408,20 +414,23 @@
 
   // ------------------------------------------------------------ boot
   async function boot() {
-    if (!window.crossOriginIsolated || typeof SharedArrayBuffer === "undefined") {
-      // GitHub Pages / any static host: a service worker adds the needed headers
-      if ("serviceWorker" in navigator && location.protocol !== "file:") {
+    const isolated = window.crossOriginIsolated && typeof SharedArrayBuffer !== "undefined";
+    if (!isolated) {
+      if (window.AndroidBridge && window.AndroidBridge.push) {
+        native = true;                      // the Android app answers the worker's input waits itself
+      } else if ("serviceWorker" in navigator && location.protocol !== "file:") {
+        // static web hosting: a service worker adds the headers that make SharedArrayBuffer available
         try {
           statusEl.textContent = "Preparing offline mode…";
-          const reg = await navigator.serviceWorker.register("sw.js");
+          await navigator.serviceWorker.register("sw.js");
           await navigator.serviceWorker.ready;
           if (!navigator.serviceWorker.controller) { location.reload(); return; }
-          if (!window.crossOriginIsolated) {
-            if (!sessionStorage.getItem("amn:reloaded")) { sessionStorage.setItem("amn:reloaded", "1"); location.reload(); return; }
+          if (!window.crossOriginIsolated && !sessionStorage.getItem("amn:reloaded")) {
+            sessionStorage.setItem("amn:reloaded", "1"); location.reload(); return;
           }
         } catch (e) { /* handled below */ }
       }
-      if (!window.crossOriginIsolated) {
+      if (!native && !(window.crossOriginIsolated && typeof SharedArrayBuffer !== "undefined")) {
         fail("This browser cannot run the game here.\nOpen it with Chrome (Android) over https, or install the Aminomon app.");
         return;
       }

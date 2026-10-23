@@ -5,7 +5,30 @@ import { loadPyodide } from "./pyodide/pyodide.mjs";
 const N = 512;            // ring slots, 4 ints each, starting at index 8
 let A = null;
 
+let ROWS = 24, COLS = 80, GEN = 0, seq = 0;
+// Two ways to block for input:
+//  - SAB mode: a SharedArrayBuffer ring + Atomics.wait (browsers, cross-origin isolated)
+//  - XHR mode: synchronous XHR to /__gv/* which the host (Android app) answers
+function xhr(path) {
+  const x = new XMLHttpRequest();
+  x.open("GET", path + (path.includes("?") ? "&" : "?") + "g=" + GEN + "&_=" + (++seq), false);
+  try { x.send(); } catch (e) { return ""; }
+  return x.status === 200 ? x.responseText : "";
+}
 self.gvWait = (ms) => {
+  if (!A) {
+    let left = ms < 0 ? 1000 : ms;
+    for (;;) {
+      const s = xhr("__gv/wait?ms=" + Math.min(Math.max(left, 0), 1000));
+      if (s) {
+        const p = s.split(",");
+        if (p[0] === "3") { COLS = +p[1]; ROWS = +p[2]; }
+        return s;
+      }
+      left -= 1000;
+      if (left <= 0) return "";
+    }
+  }
   const tail = Atomics.load(A, 1);
   let head = Atomics.load(A, 0);
   if (head === tail) {
@@ -18,10 +41,10 @@ self.gvWait = (ms) => {
   Atomics.store(A, 1, tail + 1);
   return s;
 };
-self.gvSleep = (ms) => { if (ms > 0) Atomics.wait(A, 4, 0, ms); };
-self.gvFlush = () => Atomics.store(A, 1, Atomics.load(A, 0));
-self.gvRows = () => Atomics.load(A, 2);
-self.gvCols = () => Atomics.load(A, 3);
+self.gvSleep = (ms) => { if (ms > 0) { if (A) Atomics.wait(A, 4, 0, ms); else xhr("__gv/sleep?ms=" + ms); } };
+self.gvFlush = () => { if (A) Atomics.store(A, 1, Atomics.load(A, 0)); else xhr("__gv/flush"); };
+self.gvRows = () => (A ? Atomics.load(A, 2) : ROWS);
+self.gvCols = () => (A ? Atomics.load(A, 3) : COLS);
 self.gvDraw = (j) => postMessage({ t: "draw", d: j });
 self.gvSound = (j) => postMessage({ t: "sound", d: j });
 self.gvSave = (name, text) => postMessage({ t: "save", name, text });
@@ -32,7 +55,8 @@ self.gvFatal = (text) => postMessage({ t: "fatal", text });
 self.onmessage = async (e) => {
   const m = e.data;
   if (m.t !== "init") return;
-  A = new Int32Array(m.sab);
+  A = m.sab ? new Int32Array(m.sab) : null;
+  ROWS = m.rows || 24; COLS = m.cols || 80; GEN = m.gen || 0;
   try {
     postMessage({ t: "status", s: "Loading Python…" });
     const py = await loadPyodide({ indexURL: "pyodide/" });

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#121212">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Aminomon</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<style>
+:root{--bg:#121212;--fg:#d0d0d0;--acc:#d7d7af;--btn:#262626;--btn2:#3a3a3a}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);overflow:hidden;overscroll-behavior:none;
+  font:14px/1.4 system-ui,sans-serif;touch-action:none}
+#stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .2s;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+#stage.on{opacity:1}
+#term{display:block;background:var(--bg);image-rendering:pixelated;margin-left:var(--gl,0);margin-right:var(--gr,0)}
+#pad,#acts{position:fixed;bottom:max(10px,env(safe-area-inset-bottom));display:grid;gap:6px;z-index:5}
+#pad{left:max(8px,env(safe-area-inset-left));grid-template-columns:repeat(3,1fr);width:calc(var(--gl,96px) - 14px)}
+#acts{right:max(8px,env(safe-area-inset-right));grid-template-columns:1fr;width:calc(var(--gr,96px) - 14px)}
+.b{border:1px solid #555;background:var(--btn);color:var(--fg);border-radius:10px;font:600 16px system-ui,sans-serif;
+  display:flex;align-items:center;justify-content:center;aspect-ratio:1;min-height:34px;touch-action:none;cursor:pointer}
+.b.on{background:var(--btn2);border-color:var(--acc);color:#fff}
+#acts .b{aspect-ratio:auto;min-height:40px;font-size:14px}
+#pad .e{visibility:hidden}
+#menubtn{position:fixed;top:max(6px,env(safe-area-inset-top));right:max(6px,env(safe-area-inset-right));z-index:6;width:38px;height:38px;
+  aspect-ratio:auto;opacity:.65;font-size:20px;min-height:0}
+.hide{display:none!important}
+#menu{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.72);display:flex;align-items:center;justify-content:center;touch-action:auto}
+#menu .box{background:#1c1c1c;border:1px solid #555;border-radius:14px;padding:14px;width:min(92vw,380px);max-height:92vh;overflow:auto;
+  display:grid;gap:8px}
+#menu h2{margin:0 0 4px;font-size:16px;color:var(--acc)}
+#menu .row{display:flex;gap:8px;align-items:center}
+#menu .row .b{flex:1;aspect-ratio:auto;min-height:40px;font-size:14px}
+#menu small{color:#888}
+#loader{position:fixed;inset:0;z-index:10;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg);text-align:center;padding:20px}
+#loader h1{margin:0;font:700 28px ui-monospace,Menlo,monospace;letter-spacing:.15em;color:var(--acc)}
+#spin{width:34px;height:34px;border:4px solid #333;border-top-color:var(--acc);border-radius:50%;animation:s 1s linear infinite}
+@keyframes s{to{transform:rotate(360deg)}}
+#status{white-space:pre-wrap;color:#999;max-width:90vw;font-size:13px}#status.err{color:#e08080;user-select:text;-webkit-user-select:text}
+#rotate,#exit{position:fixed;inset:0;z-index:15;background:rgba(18,18,18,.96);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:24px}
+#rotate .ph{font-size:46px;display:inline-block;animation:r 2s ease-in-out infinite}
+@keyframes r{0%,30%{transform:rotate(0)}60%,100%{transform:rotate(-90deg)}}
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="term" aria-label="Aminomon game screen" role="application"></canvas>
+</div>
+
+<div id="pad">
+  <div class="b e"></div><div class="b" data-k="up">▲</div><div class="b e"></div>
+  <div class="b" data-k="left">◀</div><div class="b" data-k="down">▼</div><div class="b" data-k="right">▶</div>
+</div>
+<div id="acts">
+  <div class="b" data-k="enter">Enter</div>
+  <div class="b" data-k="esc">Esc</div>
+  <div class="b" data-k="space">Space</div>
+</div>
+<div id="menubtn" class="b" title="Menu">☰</div>
+
+<div id="loader">
+  <h1>AMINOMON</h1><div id="spin"></div><div id="status">Starting…</div>
+</div>
+
+<div id="menu" class="hide"><div class="box">
+  <h2>Aminomon · options</h2>
+  <div class="row"><span>Text size <small id="fontlbl">auto</small></span></div>
+  <div class="row"><button class="b" data-a="smaller">A−</button><button class="b" data-a="auto">Auto</button><button class="b" data-a="bigger">A+</button></div>
+  <div class="row"><button class="b" data-a="pad">On-screen buttons</button><button class="b" data-a="full">Full screen</button></div>
+  <div class="row"><button class="b" data-a="export">Back up save</button><button class="b" data-a="import">Restore save</button></div>
+  <div class="row"><button class="b" data-a="restart">Restart game</button><button class="b" data-a="close">Close</button></div>
+  <small>Progress is saved automatically on this device. “Back up save” downloads a file you can restore on another device.</small>
+  <input id="file" type="file" accept=".json,application/json" class="hide">
+</div></div>
+
+<div id="rotate" class="hide"><div class="ph">📱</div><div>Turn your phone sideways<br>for the best view.</div><button id="rotateok" class="b" style="aspect-ratio:auto;padding:8px 18px">Play anyway</button></div>
+<div id="exit" class="hide"><div>Game closed.</div><button id="again" class="b" style="aspect-ratio:auto;padding:10px 22px">Play again</button><button id="quit" class="b hide" style="aspect-ratio:auto;padding:10px 22px">Close app</button></div>
+<script src="app.js"></script>
+</body>
+</html>

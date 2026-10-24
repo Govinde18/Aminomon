@@ -4,7 +4,7 @@
   const $ = (id) => document.getElementById(id);
   const canvas = $("term"), ctx = canvas.getContext("2d", { alpha: false });
   const stage = $("stage"), loader = $("loader"), statusEl = $("status");
-  const DEF_BG = "#121212", DEF_FG = "#d0d0d0";
+  let DEF_BG = "#121212", DEF_FG = "#d0d0d0";
   const ADV = 0.60205, LH = 1.2, ASC = 0.928, DESC = 0.236;   // DejaVu Sans Mono metrics
   const N = 512;                                              // ring slots (see worker.js)
 
@@ -22,27 +22,64 @@
     statusEl.classList.add("err");
   }
 
-  // ------------------------------------------------------------ palette
+  // ------------------------------------------------------------ palette + themes
   const pal = [];
+  const BASE = [];
   (function () {
-    const base = ["#000000", "#cd0000", "#00cd00", "#cdcd00", "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",
-      "#7f7f7f", "#ff0000", "#00ff00", "#ffff00", "#5c5cff", "#ff00ff", "#00ffff", "#ffffff"];
-    for (const c of base) pal.push(c);
+    const base = [[0,0,0],[205,0,0],[0,205,0],[205,205,0],[0,0,238],[205,0,205],[0,205,205],[229,229,229],
+      [127,127,127],[255,0,0],[0,255,0],[255,255,0],[92,92,255],[255,0,255],[0,255,255],[255,255,255]];
+    for (const c of base) BASE.push(c);
     const lv = [0, 95, 135, 175, 215, 255];
-    for (let i = 0; i < 216; i++) pal.push(`rgb(${lv[(i / 36) | 0]},${lv[((i / 6) | 0) % 6]},${lv[i % 6]})`);
-    for (let i = 0; i < 24; i++) { const v = 8 + 10 * i; pal.push(`rgb(${v},${v},${v})`); }
+    for (let i = 0; i < 216; i++) BASE.push([lv[(i / 36) | 0], lv[((i / 6) | 0) % 6], lv[i % 6]]);
+    for (let i = 0; i < 24; i++) { const v = 8 + 10 * i; BASE.push([v, v, v]); }
   })();
+  function hsl([r, g, b]) {
+    r /= 255; g /= 255; b /= 255;
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2, d = mx - mn;
+    let h = 0, s = 0;
+    if (d) {
+      s = d / (1 - Math.abs(2 * l - 1));
+      h = mx === r ? ((g - b) / d + 6) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    }
+    return [h * 60, s, l];
+  }
+  function rgbOf([h, s, l]) {
+    const c = (1 - Math.abs(2 * l - 1)) * s, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = l - c / 2;
+    const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+    return `rgb(${Math.round((r + m) * 255)},${Math.round((g + m) * 255)},${Math.round((b + m) * 255)})`;
+  }
+  const THEMES = {
+    dark: { bg: "#121212", fg: "#d0d0d0", map: (c) => `rgb(${c[0]},${c[1]},${c[2]})` },
+    light: { bg: "#f3efe4", fg: "#262626", map: (c) => { const [h, s, l] = hsl(c); return rgbOf([h, Math.min(1, s * 1.15), Math.min(0.86, Math.max(0.1, 1 - l))]); } },
+    contrast: { bg: "#000000", fg: "#ffffff", map: (c) => { const [h, s, l] = hsl(c); return rgbOf([h, Math.min(1, s * 1.2), Math.min(1, l < 0.2 ? l : 0.35 + l * 0.65)]); } },
+  };
+  let theme = store.get("amn:theme") || "dark";
+  if (!THEMES[theme]) theme = "dark";
+  function applyTheme() {
+    const t = THEMES[theme];
+    DEF_BG = t.bg; DEF_FG = t.fg;
+    for (let i = 0; i < 256; i++) pal[i] = t.map(BASE[i]);
+    document.documentElement.style.setProperty("--bg", t.bg);
+    document.documentElement.style.setProperty("--fg", t.fg);
+    document.documentElement.dataset.theme = theme;
+    const m = document.querySelector('meta[name="theme-color"]'); if (m) m.content = t.bg;
+    for (let y = 0; y < rows; y++) dirty.add(y);
+    if (ctx) { ctx.fillStyle = DEF_BG; ctx.fillRect(0, 0, canvas.width, canvas.height); schedule(); }
+  }
 
   // ------------------------------------------------------------ geometry
   let rows = 24, cols = 80, cw = 8, chh = 16, dpr = 1, fontPx = 13, baseY = 12;
   let userFont = parseFloat(store.get("amn:font") || "0") || 0;      // CSS px; 0 = auto
-  let showPad = store.get("amn:pad");
-  showPad = showPad === null ? matchMedia("(pointer: coarse)").matches : showPad === "1";
+  const coarse = matchMedia("(pointer: coarse)").matches;
+  let ctlMode = store.get("amn:ctl") || (coarse ? "float" : "off");      // side | float | off
+  let leftHand = store.get("amn:lh") === "1";
+  let haptic = store.get("amn:haptic") !== "0";
+  let muted = store.get("amn:mute") === "1";
   let cells = [];     // cells[y] = { ch: string[], fg: [], bg: [], fl: [] } per column
   let dirty = new Set(), raf = 0;
 
   function gutters() {
-    if (!showPad) return [0, 0];
+    if (ctlMode !== "side") return [0, 0];
     const w = innerWidth;
     const g = Math.max(84, Math.min(150, Math.round(w * 0.13)));
     return [g, g];
@@ -70,12 +107,16 @@
     cols = Math.max(20, d.cols);
     rows = Math.max(8, d.rows);
     canvas.width = cols * cw; canvas.height = rows * chh;
-    canvas.style.width = canvas.width / dpr + "px";
-    canvas.style.height = canvas.height / dpr + "px";
+    // the grid is at most one cell short of the screen: stretch it so no border is left
+    const nw = canvas.width / dpr, nh = canvas.height / dpr;
+    canvas.style.width = (W / nw < 1.04 ? W : nw) + "px";
+    canvas.style.height = (H / nh < 1.04 ? H : nh) + "px";
     stage.style.setProperty("--gl", gl + "px");
     stage.style.setProperty("--gr", gr + "px");
-    $("pad").style.display = showPad ? "" : "none";
-    $("acts").style.display = showPad ? "" : "none";
+    document.body.style.setProperty("--lift", Math.round(2 * chh / dpr + 8) + "px");   // keep clear of the game's 2-line bottom bar
+    document.body.classList.toggle("ctl-float", ctlMode === "float");
+    document.body.classList.toggle("ctl-off", ctlMode === "off");
+    document.body.classList.toggle("lh", leftHand);
     cells = [];
     for (let y = 0; y < rows; y++) cells.push(newRow());
     ctx.textBaseline = "alphabetic";
@@ -249,7 +290,7 @@
     } catch (e) { /* no audio */ }
   }
   function playTones(notes) {
-    if (!actx || actx.state !== "running") return;
+    if (muted || !actx || actx.state !== "running") return;
     const now = actx.currentTime;
     if (now < busyUntil) return;                       // like the Windows version: skip, don't pile up
     let t = now;
@@ -274,6 +315,11 @@
   };
   addEventListener("keydown", (e) => {
     unlockAudio();
+    if (e.ctrlKey && ["+", "=", "-", "0"].includes(e.key)) {
+      e.preventDefault();
+      if (e.key === "0") act.auto(); else setZoom((userFont || currentF()) * (e.key === "-" ? 0.92 : 1.09), true);
+      return;
+    }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
     const f = KEYMAP[e.key];
@@ -281,20 +327,57 @@
     if (e.key && [...e.key].length === 1) { key(e.key.codePointAt(0)); e.preventDefault(); }
   });
 
-  // ------------------------------------------------------------ pointer on the screen
-  let down = null;
+  // ------------------------------------------------------------ feedback helpers
+  function buzz(ms) {
+    if (!haptic) return;
+    try { if (window.AndroidBridge && window.AndroidBridge.haptic) window.AndroidBridge.haptic(); else if (navigator.vibrate) navigator.vibrate(ms || 8); } catch (e) { /* ignore */ }
+  }
+  function ripple(px, py) {
+    const r = document.createElement("div");
+    r.className = "rip"; r.style.left = px + "px"; r.style.top = py + "px";
+    document.body.appendChild(r);
+    setTimeout(() => r.remove(), 450);
+  }
+  let toastT = 0;
+  function toast(msg) {
+    const t = $("toast"); t.textContent = msg; t.classList.add("show");
+    clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("show"), 1600);
+  }
+
+  // ------------------------------------------------------------ pointer on the screen (tap, scroll, pinch-zoom)
+  const ptrs = new Map();
+  let down = null, pinch = null, zoomT = 0;
   canvas.style.touchAction = "none";
   function cellAt(e) {
     const r = canvas.getBoundingClientRect();
-    const x = Math.floor(((e.clientX - r.left) * dpr) / cw), y = Math.floor(((e.clientY - r.top) * dpr) / chh);
+    const x = Math.floor(((e.clientX - r.left) / r.width) * cols), y = Math.floor(((e.clientY - r.top) / r.height) * rows);
     return [Math.max(0, Math.min(cols - 1, x)), Math.max(0, Math.min(rows - 1, y))];
+  }
+  function setZoom(f, save) {
+    userFont = Math.max(5, Math.min(40, f));
+    clearTimeout(zoomT);
+    zoomT = setTimeout(() => { relayout(); toast("Zoom " + cols + "×" + rows); }, 60);
+    if (save) store.set("amn:font", userFont);
   }
   canvas.addEventListener("pointerdown", (e) => {
     unlockAudio();
-    down = { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now(), scrolled: 0, last: e.clientY };
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
     try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+    if (ptrs.size === 2) {                                   // second finger: pinch-zoom
+      const [p, q] = [...ptrs.values()];
+      pinch = { d: Math.hypot(p.x - q.x, p.y - q.y) || 1, f: userFont || currentF() };
+      down = null; return;
+    }
+    if (ptrs.size === 1) down = { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now(), scrolled: 0, last: e.clientY };
   });
   canvas.addEventListener("pointermove", (e) => {
+    const p = ptrs.get(e.pointerId); if (p) { p.x = e.clientX; p.y = e.clientY; }
+    if (pinch && ptrs.size >= 2) {
+      const [a1, b1] = [...ptrs.values()];
+      const ratio = (Math.hypot(a1.x - b1.x, a1.y - b1.y) || 1) / pinch.d;
+      setZoom(pinch.f * ratio, false);
+      return;
+    }
     if (!down || e.pointerId !== down.id || e.pointerType === "mouse") return;
     const step = (chh / dpr) * 2.2;                                 // vertical drag = wheel
     const dy = e.clientY - down.last;
@@ -304,16 +387,25 @@
       down.last = e.clientY; down.scrolled++;
     }
   });
-  canvas.addEventListener("pointerup", (e) => {
+  function endPointer(e, cancelled) {
+    ptrs.delete(e.pointerId);
+    if (pinch) {
+      if (ptrs.size < 2) { store.set("amn:font", userFont); $("fontlbl").textContent = userFont.toFixed(1) + " px"; pinch = null; down = null; }
+      return;
+    }
     if (!down || e.pointerId !== down.id) return;
     const d = down; down = null;
+    if (cancelled) return;
     const moved = Math.hypot(e.clientX - d.x, e.clientY - d.y);
     if (d.scrolled || moved > 14 || performance.now() - d.t > 900) return;
     const [cx, cy] = cellAt(e); click(cx, cy);
-  });
-  canvas.addEventListener("pointercancel", () => { down = null; });
+    ripple(e.clientX, e.clientY); buzz(6);
+  }
+  canvas.addEventListener("pointerup", (e) => endPointer(e, false));
+  canvas.addEventListener("pointercancel", (e) => endPointer(e, true));
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
+    if (e.ctrlKey) { setZoom((userFont || currentF()) * (e.deltaY < 0 ? 1.08 : 0.93), true); return; }   // trackpad pinch / ctrl+wheel
     const [cx, cy] = cellAt(e); wheel(cx, cy, e.deltaY < 0);
   }, { passive: false });
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
@@ -323,7 +415,7 @@
     let t1 = 0, t2 = 0;
     const stop = () => { clearTimeout(t1); clearInterval(t2); el.classList.remove("on"); };
     el.addEventListener("pointerdown", (e) => {
-      e.preventDefault(); unlockAudio(); el.classList.add("on");
+      e.preventDefault(); unlockAudio(); el.classList.add("on"); buzz(10);
       try { el.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
       fire();
       if (repeat) { t1 = setTimeout(() => { t2 = setInterval(fire, 85); }, 320); }
@@ -334,59 +426,146 @@
   for (const b of document.querySelectorAll("[data-k]")) {
     const k = b.dataset.k;
     const fire = { up: () => special(K.UP), down: () => special(K.DOWN), left: () => special(K.LEFT), right: () => special(K.RIGHT),
-      enter: () => key(10), esc: () => key(27), space: () => key(32) }[k];
+      enter: () => key(10), esc: () => key(27), space: () => key(32), back: () => special(K.BACKSPACE) }[k];
     if (fire) bindButton(b, fire, ["up", "down", "left", "right"].includes(k));
   }
+
+  // quick keys panel: every letter and digit, for the game's hotkeys
+  (function () {
+    const rowsDef = ["1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"];
+    const host = $("keyrows");
+    for (const r of rowsDef) {
+      const d = document.createElement("div"); d.className = "krow";
+      for (const ch of r) {
+        const b = document.createElement("div"); b.className = "b kb"; b.textContent = ch;
+        bindButton(b, () => key(ch.toLowerCase().codePointAt(0)), false);
+        d.appendChild(b);
+      }
+      host.appendChild(d);
+    }
+    const d = document.createElement("div"); d.className = "krow";
+    for (const [t, f] of [["Esc", () => key(27)], ["Space", () => key(32)], ["⌫", () => special(K.BACKSPACE)], ["Enter", () => key(10)], ["Close", () => $("keys").classList.add("hide")]]) {
+      const b = document.createElement("div"); b.className = "b kb wide"; b.textContent = t;
+      bindButton(b, f, false); d.appendChild(b);
+    }
+    host.appendChild(d);
+  })();
 
   // ------------------------------------------------------------ menu
   const menu = $("menu");
   const toggleMenu = (v) => menu.classList.toggle("hide", v === undefined ? !menu.classList.contains("hide") : !v);
-  $("menubtn").addEventListener("pointerdown", (e) => { e.preventDefault(); unlockAudio(); toggleMenu(); });
+  $("menubtn").addEventListener("pointerdown", (e) => { e.preventDefault(); unlockAudio(); buzz(10); toggleMenu(); });
   function relayout() {
     computeGeometry(); sendSize();
     $("fontlbl").textContent = userFont ? userFont.toFixed(1) + " px" : "auto";
-    updateRotate();
+    refreshLabels(); updateRotate();
+  }
+  function refreshLabels() {
+    $("l-ctl").textContent = { side: "Side bars", float: "Floating", off: "Hidden" }[ctlMode];
+    $("l-hand").textContent = leftHand ? "Left" : "Right";
+    $("l-theme").textContent = { dark: "Dark", light: "Light", contrast: "High contrast" }[theme];
+    $("l-haptic").textContent = haptic ? "On" : "Off";
+    $("l-mute").textContent = muted ? "Muted" : "On";
+    $("l-wake").textContent = wakeOn ? "On" : "Off";
+  }
+  let wakeOn = store.get("amn:wake") !== "0", wakeLock = null;
+  async function applyWake() {
+    try {
+      if (wakeOn && "wakeLock" in navigator && document.visibilityState === "visible") wakeLock = await navigator.wakeLock.request("screen");
+      else if (wakeLock) { await wakeLock.release(); wakeLock = null; }
+    } catch (e) { /* not allowed */ }
+  }
+  document.addEventListener("visibilitychange", applyWake);
+  let installEvt = null;
+  addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installEvt = e; $("b-install").classList.remove("hide"); });
+  function currentF() { return Math.round((cw / ADV) / dpr * 4) / 4; }
+  function saveBundle() {
+    const o = {};
+    for (const k of store.keys()) if (k.startsWith("amn:f:")) o[k.slice(6)] = store.get(k);
+    return JSON.stringify(o);
+  }
+  function showBackup(mode) {
+    $("save").classList.remove("hide");
+    $("save-title").textContent = mode === "export" ? "Back up your game" : "Restore a backup";
+    $("save-help").textContent = mode === "export"
+      ? "Copy this text (or share it to yourself). To restore later, paste it in “Restore”."
+      : "Paste the backup text here, then press Restore.";
+    $("save-text").value = mode === "export" ? saveBundle() : "";
+    $("b-copy").classList.toggle("hide", mode !== "export");
+    $("b-share").classList.toggle("hide", mode !== "export");
+    $("b-restore").classList.toggle("hide", mode === "export");
   }
   const act = {
-    smaller() { userFont = Math.max(5, (userFont || currentF()) - 0.75); store.set("amn:font", userFont); relayout(); },
-    bigger() { userFont = Math.min(40, (userFont || currentF()) + 0.75); store.set("amn:font", userFont); relayout(); },
+    smaller() { setZoom((userFont || currentF()) - 0.75, true); },
+    bigger() { setZoom((userFont || currentF()) + 0.75, true); },
     auto() { userFont = 0; store.del("amn:font"); relayout(); },
-    pad() { showPad = !showPad; store.set("amn:pad", showPad ? "1" : "0"); relayout(); },
+    ctl() { ctlMode = { side: "float", float: "off", off: "side" }[ctlMode]; store.set("amn:ctl", ctlMode); relayout(); },
+    hand() { leftHand = !leftHand; store.set("amn:lh", leftHand ? "1" : "0"); relayout(); },
+    theme() { theme = { dark: "light", light: "contrast", contrast: "dark" }[theme]; store.set("amn:theme", theme); applyTheme(); refreshLabels(); },
+    haptic() { haptic = !haptic; store.set("amn:haptic", haptic ? "1" : "0"); refreshLabels(); buzz(15); },
+    mute() { muted = !muted; store.set("amn:mute", muted ? "1" : "0"); refreshLabels(); },
+    wake() { wakeOn = !wakeOn; store.set("amn:wake", wakeOn ? "1" : "0"); refreshLabels(); applyWake(); },
+    keys() { toggleMenu(false); $("keys").classList.toggle("hide"); },
     full() {
       const d = document.documentElement;
       if (document.fullscreenElement) document.exitFullscreen();
       else if (d.requestFullscreen) d.requestFullscreen().then(lockLandscape).catch(() => {});
     },
-    export() {
-      const o = {};
-      for (const k of store.keys()) if (k.startsWith("amn:f:")) o[k.slice(6)] = store.get(k);
-      const blob = new Blob([JSON.stringify(o)], { type: "application/json" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob); a.download = "aminomon-save.json";
-      document.body.appendChild(a); a.click(); a.remove();
+    shot() {
+      toggleMenu(false);
+      setTimeout(() => {
+        canvas.toBlob((blob) => {
+          if (!blob) return;
+          if (window.AndroidBridge && window.AndroidBridge.saveImage) {
+            const fr = new FileReader();
+            fr.onload = () => window.AndroidBridge.saveImage(String(fr.result).split(",")[1]);
+            fr.readAsDataURL(blob); return;
+          }
+          const file = new File([blob], "aminomon.png", { type: "image/png" });
+          if (navigator.canShare && navigator.canShare({ files: [file] })) { navigator.share({ files: [file], title: "Aminomon" }).catch(() => {}); return; }
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob); a.download = "aminomon.png";
+          document.body.appendChild(a); a.click(); a.remove(); toast("Screenshot saved");
+        }, "image/png");
+      }, 150);
     },
-    import() { $("file").click(); },
+    export() { showBackup("export"); },
+    import() { showBackup("import"); },
+    install() { if (installEvt) { installEvt.prompt(); installEvt = null; $("b-install").classList.add("hide"); } },
     restart() { if (confirm("Restart the game? (Your saved game is kept.)")) startWorker(); toggleMenu(false); },
     close() { toggleMenu(false); },
   };
   for (const b of document.querySelectorAll("[data-a]")) {
-    b.addEventListener("click", () => { const f = act[b.dataset.a]; if (f) f(); });
+    b.addEventListener("click", () => { buzz(8); const f = act[b.dataset.a]; if (f) f(); });
   }
-  $("file").addEventListener("change", async (e) => {
-    const f = e.target.files[0]; e.target.value = "";
-    if (!f) return;
+  $("b-copy").addEventListener("click", async () => {
+    const t = $("save-text"); t.focus(); t.select();
+    try { await navigator.clipboard.writeText(t.value); toast("Copied"); } catch (e) { try { document.execCommand("copy"); toast("Copied"); } catch (e2) { toast("Select the text and copy it"); } }
+  });
+  $("b-share").addEventListener("click", () => {
+    const text = $("save-text").value;
+    if (window.AndroidBridge && window.AndroidBridge.shareText) window.AndroidBridge.shareText(text);
+    else if (navigator.share) navigator.share({ title: "Aminomon save", text }).catch(() => {});
+    else {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([text], { type: "application/json" })); a.download = "aminomon-save.json";
+      document.body.appendChild(a); a.click(); a.remove();
+    }
+  });
+  $("b-restore").addEventListener("click", () => {
     try {
-      const o = JSON.parse(await f.text());
+      const o = JSON.parse($("save-text").value.trim());
       let n = 0;
       for (const [k, v] of Object.entries(o)) if (/^\.aminomon[\w.]*$/.test(k) && typeof v === "string") { store.set("amn:f:" + k, v); n++; }
       if (!n) throw new Error("no save data");
-      alert("Save restored. The game will restart."); toggleMenu(false); startWorker();
-    } catch (err) { alert("That file is not an Aminomon save."); }
+      $("save").classList.add("hide"); toggleMenu(false); toast("Backup restored"); startWorker();
+    } catch (err) { toast("That is not an Aminomon backup"); }
   });
+  $("b-saveclose").addEventListener("click", () => $("save").classList.add("hide"));
+  $("save-text").addEventListener("pointerdown", (e) => e.stopPropagation());
   if (window.AndroidBridge) $("quit").classList.remove("hide");
   $("quit").addEventListener("click", () => { try { window.AndroidBridge.quit(); } catch (e) { /* ignore */ } });
   $("again").addEventListener("click", () => { $("exit").classList.add("hide"); startWorker(); });
-  function currentF() { return Math.round((cw / ADV) / dpr * 4) / 4; }
 
   // ------------------------------------------------------------ orientation / fullscreen
   function lockLandscape() {
@@ -444,6 +623,7 @@
         new FontFace("GVMono", "url(fonts/mono-Bold.woff)", { weight: "700" }).load().then((f) => document.fonts.add(f)),
       ]);
     } catch (e) { /* falls back to the system monospace font */ }
+    applyTheme(); applyWake();
     relayout();
     startWorker();
   }

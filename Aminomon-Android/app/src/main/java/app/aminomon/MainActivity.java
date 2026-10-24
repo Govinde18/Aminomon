@@ -75,6 +75,42 @@ public class MainActivity extends Activity {
                 if (events.size() < 600) events.offer(type + "," + a + "," + b + "," + c);
             }
             @JavascriptInterface public void reset(int gen) { generation = gen; events.clear(); }
+            @JavascriptInterface public void haptic() {
+                runOnUiThread(() -> web.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY));
+            }
+            @JavascriptInterface public void shareText(final String text) {
+                runOnUiThread(() -> {
+                    android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_SEND);
+                    i.setType("text/plain");
+                    i.putExtra(android.content.Intent.EXTRA_TEXT, text);
+                    startActivity(android.content.Intent.createChooser(i, "Aminomon backup"));
+                });
+            }
+            @JavascriptInterface public void saveImage(final String base64) {
+                new Thread(() -> {
+                    String msg;
+                    try {
+                        byte[] data = android.util.Base64.decode(base64, android.util.Base64.DEFAULT);
+                        if (Build.VERSION.SDK_INT >= 29) {
+                            android.content.ContentValues v = new android.content.ContentValues();
+                            v.put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, "aminomon-" + System.currentTimeMillis() + ".png");
+                            v.put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/png");
+                            v.put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Aminomon");
+                            android.net.Uri u = getContentResolver().insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
+                            java.io.OutputStream o = getContentResolver().openOutputStream(u);
+                            o.write(data);
+                            o.close();
+                            msg = "Screenshot saved in Pictures/Aminomon";
+                        } else {
+                            msg = "Screenshots need Android 10 or newer";
+                        }
+                    } catch (Exception e) {
+                        msg = "Could not save the screenshot";
+                    }
+                    final String m = msg;
+                    runOnUiThread(() -> android.widget.Toast.makeText(MainActivity.this, m, android.widget.Toast.LENGTH_LONG).show());
+                }).start();
+            }
         }, "AndroidBridge");
         w.setWebChromeClient(new WebChromeClient());
         w.setWebViewClient(new WebViewClient() {

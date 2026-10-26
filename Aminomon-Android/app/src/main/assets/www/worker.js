@@ -43,6 +43,7 @@ self.gvWait = (ms) => {
 };
 self.gvSleep = (ms) => { if (ms > 0) { if (A) Atomics.wait(A, 4, 0, ms); else xhr("__gv/sleep?ms=" + ms); } };
 self.gvFlush = () => { if (A) Atomics.store(A, 1, Atomics.load(A, 0)); else xhr("__gv/flush"); };
+self.gvProf = (j) => postMessage({ t: "prof", d: j });
 self.gvRows = () => (A ? Atomics.load(A, 2) : ROWS);
 self.gvCols = () => (A ? Atomics.load(A, 3) : COLS);
 self.gvDraw = (j) => postMessage({ t: "draw", d: j });
@@ -58,9 +59,9 @@ self.onmessage = async (e) => {
   A = m.sab ? new Int32Array(m.sab) : null;
   ROWS = m.rows || 24; COLS = m.cols || 80; GEN = m.gen || 0;
   try {
-    postMessage({ t: "status", s: "Loading Python…" });
+    postMessage({ t: "status", s: "Loading Python…", p: 12 });
     const py = await loadPyodide({ indexURL: "pyodide/" });
-    postMessage({ t: "status", s: "Loading game…" });
+    postMessage({ t: "status", s: "Loading game…", p: 70 });
     const zip = await (await fetch("game.zip")).arrayBuffer();
     py.unpackArchive(zip, "zip", { extractDir: "/game" });
     const home = "/home/pyodide";
@@ -72,6 +73,7 @@ self.onmessage = async (e) => {
       "import os\nos.environ['HOME']='" + home + "'\nos.environ['LANG']=" +
       JSON.stringify(m.lang || "en_US.UTF-8") + "\nos.environ['TERM']='xterm-256color'"
     );
+    postMessage({ t: "status", s: "Starting…", p: 92 });
     postMessage({ t: "ready" });
     py.runPython("import sys; sys.path.insert(0,'/game'); import boot");
   } catch (err) {

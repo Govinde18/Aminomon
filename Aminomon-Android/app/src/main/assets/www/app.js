@@ -74,7 +74,6 @@
   let ctlMode = store.get("amn:ctl") || (coarse ? "float" : "off");      // side | float | off
   let leftHand = store.get("amn:lh") === "1";
   let haptic = store.get("amn:haptic") !== "0";
-  let muted = store.get("amn:mute") === "1";
   let cells = [];     // cells[y] = { ch: string[], fg: [], bg: [], fl: [] } per column
   let dirty = new Set(), raf = 0;
 
@@ -85,27 +84,39 @@
     return [g, g];
   }
 
+  const MIN_FONT = 5;
+  function area() {
+    const [gl, gr] = gutters();
+    return { gl, gr, W: Math.max(100, innerWidth - gl - gr), H: Math.max(100, innerHeight) };
+  }
+  function dimsFor(f, W, H) {
+    const c = Math.max(3, Math.round(f * ADV * dpr)), fp = c / ADV, h = Math.round(fp * LH);
+    return { cw: c, fontPx: fp, chh: h, cols: Math.floor((W * dpr) / c), rows: Math.floor((H * dpr) / h) };
+  }
+  // The game needs at least 80x24 characters, so that is where zooming in stops.
+  function maxFont() {
+    dpr = window.devicePixelRatio || 1;
+    const { W, H } = area();
+    for (let t = 40; t > MIN_FONT; t -= 0.25) { const x = dimsFor(t, W, H); if (x.cols >= 80 && x.rows >= 24) return t; }
+    return MIN_FONT;
+  }
+  function clampFont(f) { return Math.max(MIN_FONT, Math.min(maxFont(), f)); }
+
   function computeGeometry() {
     dpr = window.devicePixelRatio || 1;
-    const [gl, gr] = gutters();
-    const W = Math.max(100, innerWidth - gl - gr), H = Math.max(100, innerHeight);
-    const dims = (f) => {
-      const c = Math.max(3, Math.round(f * ADV * dpr)), fp = c / ADV, h = Math.round(fp * LH);
-      return { cw: c, fontPx: fp, chh: h, cols: Math.floor((W * dpr) / c), rows: Math.floor((H * dpr) / h) };
-    };
-    let f = userFont, d;
-    if (!f) {                                    // auto: biggest font that still fits 80x24
-      f = 5;
-      for (let t = 5; t <= 18; t += 0.25) {
-        const x = dims(t);
-        if (x.cols >= 80 && x.rows >= 24) f = t; else if (t > 8) break;
-      }
-    }
+    const { gl, gr, W, H } = area();
+    const dims = (f) => dimsFor(f, W, H);
+    let f = userFont ? clampFont(userFont) : Math.min(maxFont(), 18), d;
     d = dims(f);
     cw = d.cw; fontPx = d.fontPx; chh = d.chh;
     baseY = Math.round((chh - fontPx * (ASC + DESC)) / 2 + fontPx * ASC);
     cols = Math.max(20, d.cols);
     rows = Math.max(8, d.rows);
+    let snap = null;                                        // keep showing the old picture until the game redraws
+    if (canvas.width > 10 && canvas.height > 10) {
+      snap = document.createElement("canvas"); snap.width = canvas.width; snap.height = canvas.height;
+      snap.getContext("2d").drawImage(canvas, 0, 0);
+    }
     canvas.width = cols * cw; canvas.height = rows * chh;
     // the grid is at most one cell short of the screen: stretch it so no border is left
     const nw = canvas.width / dpr, nh = canvas.height / dpr;
@@ -121,6 +132,7 @@
     for (let y = 0; y < rows; y++) cells.push(newRow());
     ctx.textBaseline = "alphabetic";
     ctx.fillStyle = DEF_BG; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (snap) ctx.drawImage(snap, 0, 0, canvas.width, canvas.height);
   }
   function newRow() {
     return { ch: new Array(cols).fill(" "), fg: new Array(cols).fill(-1), bg: new Array(cols).fill(-1), fl: new Array(cols).fill(0) };
@@ -190,15 +202,22 @@
     }
     ctx.globalAlpha = 1;
   }
+  let lastBig = 0;
+  const stats = { paint: 0, paints: 0, parse: 0, draws: 0, lat: 0, lats: 0, tIn: 0 };
   function flush() {
     raf = 0;
+    const t0 = performance.now();
     for (const y of dirty) paintRow(y);
     dirty.clear();
+    stats.paint += performance.now() - t0; stats.paints++;
   }
   function schedule() { if (!raf) raf = requestAnimationFrame(flush); }
 
   function onDraw(json) {
+    const t0 = performance.now();
+    if (stats.tIn) { stats.lat += t0 - stats.tIn; stats.lats++; stats.tIn = 0; }
     const m = JSON.parse(json);
+    wheelBusy = 0;
     if (m.rows !== rows || m.cols !== cols) return;          // stale frame from before a resize
     if (m.full) for (let y = 0; y < rows; y++) dirty.add(y);
     for (const [y, text, runs] of m.r) {
@@ -213,8 +232,16 @@
     if (!loader.classList.contains("hide")) {
       loader.classList.add("hide");
       stage.classList.add("on");
+      firstRun();
     }
+    // a whole new screen (not a small update): fade it in softly
+    const big = m.r.length >= rows * 0.75;
+    const nowT = performance.now();
+    if (big && nowT - lastBig > 260 && canvas.animate && !pinch) canvas.animate([{ opacity: 0.35 }, { opacity: 1 }], { duration: 170, easing: "ease-out" });
+    if (big) lastBig = nowT;
+    if (m.r.some((r) => r[0] === 0)) window.AmnAudio.mood(onMap() ? "calm" : "focus");
     schedule();
+    stats.parse += performance.now() - t0; stats.draws++;
   }
 
   // ------------------------------------------------------------ worker + input ring
@@ -231,7 +258,7 @@
     Atomics.store(A, 0, head + 1);
     Atomics.notify(A, 0);
   }
-  const key = (cp) => push(1, cp, 0, 0);
+  const key = (cp) => { stats.tIn = performance.now(); push(1, cp, 0, 0); };
   const special = (code) => push(4, code, 0, 0);
   const click = (x, y) => push(2, x, y, 1);
   const wheel = (x, y, up) => push(2, x, y, up ? 4 : 5);
@@ -247,7 +274,7 @@
     if (worker) worker.terminate();
     loader.classList.remove("hide"); stage.classList.remove("on");
     $("spin").style.display = ""; statusEl.classList.remove("err");
-    statusEl.textContent = "Starting…";
+    statusEl.textContent = "Starting…"; $("bar").style.width = "4%";
     if (native) {
       sab = null; A = null;
       try { window.AndroidBridge.reset(my); } catch (e) { /* ignore */ }
@@ -264,9 +291,10 @@
       if (my !== gen) return;
       const m = e.data;
       switch (m.t) {
-        case "status": statusEl.textContent = m.s; break;
+        case "status": statusEl.textContent = m.s; $("bar").style.width = (m.p || 5) + "%"; break;
         case "draw": onDraw(m.d); break;
-        case "sound": playTones(JSON.parse(m.d)); break;
+        case "prof": stats.py = m.d; break;
+        case "sound": playSound(JSON.parse(m.d)); break;
         case "save": store.set("amn:f:" + m.name, m.text); break;
         case "restart": startWorker(); break;
         case "exit": showExit(); break;
@@ -277,34 +305,22 @@
     worker.onerror = (e) => { if (my === gen) fail("The game could not start: " + (e.message || e)); };
     worker.postMessage({ t: "init", sab, rows, cols, gen: my, files, lang: lang + ".UTF-8" });
   }
+  const TIPS = ["Tap any button on screen, or tap the map to walk there.", "Pinch with two fingers to zoom. Drag on the map to walk.",
+    "Drag a list to scroll it, flick for a glide.", "Open ☰ for music, themes and your backup.", "Every amino acid has a story: read the side chains!"];
+  let tipI = 0; setInterval(() => { if (!loader.classList.contains("hide")) { tipI = (tipI + 1) % TIPS.length; $("tip").textContent = TIPS[tipI]; } }, 2600);
+  $("tip").textContent = TIPS[0];
+  function firstRun() {
+    if (store.get("amn:coach") === "1") return;
+    setTimeout(() => { if (store.get("amn:coach") !== "1") $("coach").classList.remove("hide"); }, 700);
+  }
+  $("coach-ok").addEventListener("click", () => { store.set("amn:coach", "1"); $("coach").classList.add("hide"); unlockAudio(); });
   function showExit() {
     $("exit").classList.remove("hide");
   }
 
-  // ------------------------------------------------------------ audio
-  let actx = null, busyUntil = 0;
-  function unlockAudio() {
-    try {
-      if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
-      if (actx.state === "suspended") actx.resume();
-    } catch (e) { /* no audio */ }
-  }
-  function playTones(notes) {
-    if (muted || !actx || actx.state !== "running") return;
-    const now = actx.currentTime;
-    if (now < busyUntil) return;                       // like the Windows version: skip, don't pile up
-    let t = now;
-    for (const [f, ms] of notes) {
-      const o = actx.createOscillator(), g = actx.createGain();
-      o.type = "square"; o.frequency.value = f;
-      g.gain.setValueAtTime(0.035, t);
-      g.gain.setValueAtTime(0.0001, t + ms / 1000 - 0.004);
-      o.connect(g); g.connect(actx.destination);
-      o.start(t); o.stop(t + ms / 1000);
-      t += ms / 1000;
-    }
-    busyUntil = t;
-  }
+  // ------------------------------------------------------------ audio (see audio.js)
+  const unlockAudio = () => window.AmnAudio && window.AmnAudio.unlock();
+  const playSound = (m) => window.AmnAudio && window.AmnAudio.sfx(m.n);
 
   // ------------------------------------------------------------ keyboard
   const KEYMAP = {
@@ -317,7 +333,7 @@
     unlockAudio();
     if (e.ctrlKey && ["+", "=", "-", "0"].includes(e.key)) {
       e.preventDefault();
-      if (e.key === "0") act.auto(); else setZoom((userFont || currentF()) * (e.key === "-" ? 0.92 : 1.09), true);
+      if (e.key === "0") act.auto(); else setZoom((userFont || Math.min(maxFont(), 18)) * (e.key === "-" ? 0.92 : 1.09), true);
       return;
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -346,57 +362,102 @@
 
   // ------------------------------------------------------------ pointer on the screen (tap, scroll, pinch-zoom)
   const ptrs = new Map();
-  let down = null, pinch = null, zoomT = 0;
+  let down = null, pinch = null, inertia = 0, wheelBusy = 0;
   canvas.style.touchAction = "none";
+  const onMap = () => { const r = cells[0]; return !!r && r.ch.slice(0, 9).join("") === " AMINOMON"; };
   function cellAt(e) {
     const r = canvas.getBoundingClientRect();
     const x = Math.floor(((e.clientX - r.left) / r.width) * cols), y = Math.floor(((e.clientY - r.top) / r.height) * rows);
     return [Math.max(0, Math.min(cols - 1, x)), Math.max(0, Math.min(rows - 1, y))];
   }
+  // zoom: the picture scales smoothly under your fingers; the grid is rebuilt once you let go
   function setZoom(f, save) {
-    userFont = Math.max(5, Math.min(40, f));
-    clearTimeout(zoomT);
-    zoomT = setTimeout(() => { relayout(); toast("Zoom " + cols + "×" + rows); }, 60);
-    if (save) store.set("amn:font", userFont);
+    const lim = maxFont(), cur = userFont || Math.min(lim, 18);
+    const t = clampFont(f);
+    if (f > lim + 0.01) toast("Maximum zoom"); else if (f < MIN_FONT - 0.01) toast("Minimum zoom");
+    if (t === cur && !save) return;
+    userFont = t; store.set("amn:font", userFont);
+    relayout(); toast(cols + "×" + rows);
+  }
+  function wheelOut(cx, cy, up) {
+    if (wheelBusy >= 3) return;              // the game is still busy drawing: do not pile up
+    wheelBusy++; wheel(cx, cy, up); buzz(3);
+  }
+  function stopInertia() { if (inertia) { cancelAnimationFrame(inertia); inertia = 0; } }
+  function startInertia(v, cx, cy) {         // v: rows per second (signed, + = down)
+    stopInertia();
+    let last = performance.now(), acc = 0;
+    const tick = (now) => {
+      const dt = Math.min(0.05, (now - last) / 1000); last = now;
+      v *= Math.pow(0.04, dt);               // glides, slowing like a flick on a phone
+      acc += v * dt;
+      while (Math.abs(acc) >= 1) { wheelOut(cx, cy, acc > 0); acc -= Math.sign(acc); }
+      inertia = Math.abs(v) > 1.5 ? requestAnimationFrame(tick) : 0;
+    };
+    inertia = requestAnimationFrame(tick);
   }
   canvas.addEventListener("pointerdown", (e) => {
-    unlockAudio();
+    unlockAudio(); stopInertia();
     ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
     try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
     if (ptrs.size === 2) {                                   // second finger: pinch-zoom
       const [p, q] = [...ptrs.values()];
-      pinch = { d: Math.hypot(p.x - q.x, p.y - q.y) || 1, f: userFont || currentF() };
+      pinch = { d: Math.hypot(p.x - q.x, p.y - q.y) || 1, f: userFont || Math.min(maxFont(), 18), t: null,
+        cx: (p.x + q.x) / 2, cy: (p.y + q.y) / 2 };
+      canvas.style.transformOrigin = pinch.cx + "px " + pinch.cy + "px";
       down = null; return;
     }
-    if (ptrs.size === 1) down = { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now(), scrolled: 0, last: e.clientY };
+    if (ptrs.size === 1) down = { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now(), scrolled: 0,
+      lastY: e.clientY, lastX: e.clientX, moves: [], map: onMap() };
   });
   canvas.addEventListener("pointermove", (e) => {
     const p = ptrs.get(e.pointerId); if (p) { p.x = e.clientX; p.y = e.clientY; }
     if (pinch && ptrs.size >= 2) {
       const [a1, b1] = [...ptrs.values()];
       const ratio = (Math.hypot(a1.x - b1.x, a1.y - b1.y) || 1) / pinch.d;
-      setZoom(pinch.f * ratio, false);
+      pinch.t = clampFont(pinch.f * ratio);
+      canvas.style.transform = "scale(" + (pinch.t / pinch.f).toFixed(4) + ")";
       return;
     }
     if (!down || e.pointerId !== down.id || e.pointerType === "mouse") return;
-    const step = (chh / dpr) * 2.2;                                 // vertical drag = wheel
-    const dy = e.clientY - down.last;
-    if (Math.abs(dy) >= step) {
+    const rowPx = chh / dpr, now = performance.now();
+    down.moves.push([now, e.clientY]); if (down.moves.length > 6) down.moves.shift();
+    if (down.map) {                                          // on the map: dragging walks, like a joystick
+      const dx = e.clientX - down.lastX, dy = e.clientY - down.lastY;
+      const stepPx = rowPx * 1.9;
+      if (Math.abs(dx) >= stepPx * 0.55 || Math.abs(dy) >= stepPx) {
+        if (Math.abs(dx) * 0.55 >= Math.abs(dy) * 0.45 && Math.abs(dx) >= stepPx * 0.55) { special(dx > 0 ? K.RIGHT : K.LEFT); down.lastX = e.clientX; down.lastY = e.clientY; }
+        else if (Math.abs(dy) >= stepPx) { special(dy > 0 ? K.DOWN : K.UP); down.lastX = e.clientX; down.lastY = e.clientY; }
+        down.scrolled++; buzz(3);
+      }
+      return;
+    }
+    const dy = e.clientY - down.lastY;                       // lists: finger drag scrolls, row by row
+    if (Math.abs(dy) >= rowPx * 1.1) {
       const [cx, cy] = cellAt(e);
-      wheel(cx, cy, dy > 0);
-      down.last = e.clientY; down.scrolled++;
+      wheelOut(cx, cy, dy > 0);
+      down.lastY = e.clientY; down.scrolled++;
     }
   });
   function endPointer(e, cancelled) {
     ptrs.delete(e.pointerId);
     if (pinch) {
-      if (ptrs.size < 2) { store.set("amn:font", userFont); $("fontlbl").textContent = userFont.toFixed(1) + " px"; pinch = null; down = null; }
+      if (ptrs.size < 2) {
+        const t = pinch.t; pinch = null; down = null;
+        canvas.style.transform = ""; canvas.style.transformOrigin = "";
+        if (t) { userFont = t; store.set("amn:font", userFont); relayout(); toast(cols + "×" + rows + (t >= maxFont() - 0.01 ? " · max zoom" : "")); }
+      }
       return;
     }
     if (!down || e.pointerId !== down.id) return;
     const d = down; down = null;
     if (cancelled) return;
     const moved = Math.hypot(e.clientX - d.x, e.clientY - d.y);
+    if (d.scrolled && !d.map && d.moves.length > 2) {       // flick: keep gliding
+      const f = d.moves[0], l = d.moves[d.moves.length - 1], dt = (l[0] - f[0]) / 1000;
+      const v = dt > 0.01 ? (l[1] - f[1]) / dt / (chh / dpr) : 0;
+      if (Math.abs(v) > 6 && performance.now() - l[0] < 90) { const [cx, cy] = cellAt(e); startInertia(Math.max(-40, Math.min(40, v)), cx, cy); }
+    }
     if (d.scrolled || moved > 14 || performance.now() - d.t > 900) return;
     const [cx, cy] = cellAt(e); click(cx, cy);
     ripple(e.clientX, e.clientY); buzz(6);
@@ -405,7 +466,7 @@
   canvas.addEventListener("pointercancel", (e) => endPointer(e, true));
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
-    if (e.ctrlKey) { setZoom((userFont || currentF()) * (e.deltaY < 0 ? 1.08 : 0.93), true); return; }   // trackpad pinch / ctrl+wheel
+    if (e.ctrlKey) { setZoom((userFont || Math.min(maxFont(), 18)) * (e.deltaY < 0 ? 1.08 : 0.93), true); return; }   // trackpad pinch / ctrl+wheel
     const [cx, cy] = cellAt(e); wheel(cx, cy, e.deltaY < 0);
   }, { passive: false });
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
@@ -415,10 +476,10 @@
     let t1 = 0, t2 = 0;
     const stop = () => { clearTimeout(t1); clearInterval(t2); el.classList.remove("on"); };
     el.addEventListener("pointerdown", (e) => {
-      e.preventDefault(); unlockAudio(); el.classList.add("on"); buzz(10);
+      e.preventDefault(); unlockAudio(); el.classList.add("on"); buzz(10); window.AmnAudio.sfx("tick");
       try { el.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
       fire();
-      if (repeat) { t1 = setTimeout(() => { t2 = setInterval(fire, 85); }, 320); }
+      if (repeat) { t1 = setTimeout(() => { t2 = setInterval(fire, 70); }, 210); }
     });
     for (const ev of ["pointerup", "pointercancel", "lostpointercapture"]) el.addEventListener(ev, stop);
     el.addEventListener("contextmenu", (e) => e.preventDefault());
@@ -465,7 +526,9 @@
     $("l-hand").textContent = leftHand ? "Left" : "Right";
     $("l-theme").textContent = { dark: "Dark", light: "Light", contrast: "High contrast" }[theme];
     $("l-haptic").textContent = haptic ? "On" : "Off";
-    $("l-mute").textContent = muted ? "Muted" : "On";
+    const A = window.AmnAudio.S;
+    $("l-music").textContent = A.music ? "On" : "Off";
+    $("l-sfx").textContent = A.sfx ? "On" : "Off";
     $("l-wake").textContent = wakeOn ? "On" : "Off";
   }
   let wakeOn = store.get("amn:wake") !== "0", wakeLock = null;
@@ -475,7 +538,11 @@
       else if (wakeLock) { await wakeLock.release(); wakeLock = null; }
     } catch (e) { /* not allowed */ }
   }
-  document.addEventListener("visibilitychange", applyWake);
+  document.addEventListener("visibilitychange", () => { applyWake(); window.AmnAudio.pause(document.visibilityState !== "visible"); });
+  $("vol-music").addEventListener("input", (e) => window.AmnAudio.setMusicVol(+e.target.value));
+  $("vol-sfx").addEventListener("input", (e) => window.AmnAudio.setSfxVol(+e.target.value));
+  $("vol-sfx").addEventListener("change", () => window.AmnAudio.sfx("captura"));
+  $("vol-music").value = window.AmnAudio.S.mvol; $("vol-sfx").value = window.AmnAudio.S.svol;
   let installEvt = null;
   addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installEvt = e; $("b-install").classList.remove("hide"); });
   function currentF() { return Math.round((cw / ADV) / dpr * 4) / 4; }
@@ -496,14 +563,15 @@
     $("b-restore").classList.toggle("hide", mode === "export");
   }
   const act = {
-    smaller() { setZoom((userFont || currentF()) - 0.75, true); },
-    bigger() { setZoom((userFont || currentF()) + 0.75, true); },
+    smaller() { setZoom((userFont || Math.min(maxFont(), 18)) - 0.75, true); },
+    bigger() { setZoom((userFont || Math.min(maxFont(), 18)) + 0.75, true); },
     auto() { userFont = 0; store.del("amn:font"); relayout(); },
     ctl() { ctlMode = { side: "float", float: "off", off: "side" }[ctlMode]; store.set("amn:ctl", ctlMode); relayout(); },
     hand() { leftHand = !leftHand; store.set("amn:lh", leftHand ? "1" : "0"); relayout(); },
     theme() { theme = { dark: "light", light: "contrast", contrast: "dark" }[theme]; store.set("amn:theme", theme); applyTheme(); refreshLabels(); },
     haptic() { haptic = !haptic; store.set("amn:haptic", haptic ? "1" : "0"); refreshLabels(); buzz(15); },
-    mute() { muted = !muted; store.set("amn:mute", muted ? "1" : "0"); refreshLabels(); },
+    music() { window.AmnAudio.setMusic(!window.AmnAudio.S.music); refreshLabels(); },
+    sfx() { window.AmnAudio.setSfx(!window.AmnAudio.S.sfx); refreshLabels(); window.AmnAudio.sfx("correcto"); },
     wake() { wakeOn = !wakeOn; store.set("amn:wake", wakeOn ? "1" : "0"); refreshLabels(); applyWake(); },
     keys() { toggleMenu(false); $("keys").classList.toggle("hide"); },
     full() {
@@ -628,5 +696,5 @@
     startWorker();
   }
   boot();
-  window.gvDebug = { get cols() { return cols; }, get rows() { return rows; }, get cells() { return cells; }, key, click, special };
+  window.gvDebug = { stats, get cols() { return cols; }, get rows() { return rows; }, get cells() { return cells; }, key, click, special };
 })();

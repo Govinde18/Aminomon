@@ -87,11 +87,16 @@ def _tick_hook(force=False):
             pass
 
 
+_prof = {"refresh": 0.0, "n": 0, "game": 0.0, "last_in": 0.0}
+
+
 def _wait_event(ms):
     """Next input event as (type, a, b, c), or None after ms (-1: forever)."""
     if ms < 0:
         while True:
             _tick_hook(True)
+            if _prof["n"] and _prof["n"] % 1 == 0 and getattr(js, "gvProf", None):
+                js.gvProf(json.dumps(_prof))
             r = js.gvWait(1000)
             if r:
                 break
@@ -215,6 +220,10 @@ class Window:
 
     # --- output
     def refresh(self, *a):
+        _t0 = time.perf_counter()
+        if _prof["last_in"]:
+            _prof["game"] += _t0 - _prof["last_in"]
+            _prof["last_in"] = 0.0
         self._check_size()
         rows = []
         full = self._full or len(self._sent_ch) != self._rows
@@ -232,6 +241,8 @@ class Window:
         if rows or full:
             js.gvDraw(json.dumps({"rows": self._rows, "cols": self._cols,
                                   "full": full, "r": rows}, separators=(",", ":")))
+        _prof["refresh"] += time.perf_counter() - _t0
+        _prof["n"] += 1
         _tick_hook()
 
     noutrefresh = refresh
@@ -272,6 +283,7 @@ class Window:
                 if ev is None:
                     return None
             kind, a, b, c = ev
+            _prof["last_in"] = time.perf_counter()
             if kind == _EV_KEY:
                 return chr(a)
             if kind == _EV_SPECIAL:
@@ -395,6 +407,10 @@ def getmouse():
     if _last_mouse is None:
         raise error("getmouse() returned ERR")
     return _last_mouse
+
+
+def profile():
+    return json.dumps(_prof)
 
 
 def napms(ms):

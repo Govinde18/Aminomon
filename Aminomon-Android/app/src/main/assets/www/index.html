@@ -71,7 +71,20 @@ body.lh #acts{right:auto;left:max(8px,env(safe-area-inset-left))}
 #toast.show{transform:translate(-50%,0)}
 .rip{position:fixed;z-index:4;width:34px;height:34px;margin:-17px 0 0 -17px;border-radius:50%;border:2px solid var(--acc);pointer-events:none;animation:rp .45s ease-out forwards}
 @keyframes rp{from{transform:scale(.3);opacity:.9}to{transform:scale(1.5);opacity:0}}
-#fontlbl{margin-left:6px}</style>
+#fontlbl{margin-left:6px}
+#menu .b,#save .b,#coach .b{touch-action:manipulation}
+#menu .box{overscroll-behavior:contain;-webkit-overflow-scrolling:touch;touch-action:pan-y}
+#menu .sl{gap:10px}#menu .sl label{flex:0 0 118px;font-size:13px;color:#999}
+#menu input[type=range]{flex:1;accent-color:var(--acc);height:30px;touch-action:pan-x}
+#barwrap{width:min(60vw,320px);height:6px;border-radius:3px;background:#2a2a2a;overflow:hidden}
+#bar{height:100%;width:4%;background:var(--acc);border-radius:3px;transition:width .6s ease}
+#tip{color:#777;font-size:13px;min-height:20px;max-width:80vw}
+#loader{transition:opacity .35s}#loader.hide{display:flex!important;opacity:0;pointer-events:none}
+#coach{position:fixed;inset:0;z-index:18;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;touch-action:manipulation}
+#coach .box{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px 22px;max-width:min(92vw,440px);display:grid;gap:9px;justify-items:center;text-align:center}
+#coach h2{margin:0;color:var(--acc);font-size:18px}.tipline{font-size:14px;line-height:1.35}
+#stage.on #term{will-change:transform}
+</style>
 </head>
 <body>
 <div id="stage">
@@ -91,7 +104,7 @@ body.lh #acts{right:auto;left:max(8px,env(safe-area-inset-left))}
 <div id="menubtn" class="b" title="Menu">☰</div>
 
 <div id="loader">
-  <h1>AMINOMON</h1><div id="spin"></div><div id="status">Starting…</div>
+  <h1>AMINOMON</h1><div id="barwrap"><div id="bar"></div></div><div id="status">Starting…</div><div id="tip"></div><div id="spin" style="display:none"></div>
 </div>
 
 <div id="menu" class="hide"><div class="box">
@@ -104,8 +117,11 @@ body.lh #acts{right:auto;left:max(8px,env(safe-area-inset-left))}
   <div class="row"><button class="b" data-a="ctl">Buttons <span id="l-ctl"></span></button><button class="b" data-a="hand">Hand <span id="l-hand"></span></button></div>
   <div class="row"><button class="b" data-a="keys">⌨ All keys</button><button class="b" data-a="haptic">Vibration <span id="l-haptic"></span></button></div>
   <h3>Extras</h3>
-  <div class="row"><button class="b" data-a="mute">App sound <span id="l-mute"></span></button><button class="b" data-a="wake">Keep awake <span id="l-wake"></span></button></div>
-  <div class="row"><button class="b" data-a="shot">📷 Screenshot</button><button id="b-install" class="b hide" data-a="install">Install app</button></div>
+  <div class="row"><button class="b" data-a="music">♪ Music <span id="l-music"></span></button><button class="b" data-a="sfx">Effects <span id="l-sfx"></span></button></div>
+  <div class="row sl"><label>Music volume</label><input id="vol-music" type="range" min="0" max="1" step="0.05"></div>
+  <div class="row sl"><label>Effects volume</label><input id="vol-sfx" type="range" min="0" max="1" step="0.05"></div>
+  <div class="row"><button class="b" data-a="wake">Keep awake <span id="l-wake"></span></button><button class="b" data-a="shot">📷 Screenshot</button></div>
+  <div class="row"><button id="b-install" class="b hide" data-a="install">Install app</button></div>
   <h3>Your game</h3>
   <div class="row"><button class="b" data-a="export">Back up save</button><button class="b" data-a="import">Restore save</button></div>
   <div class="row"><button class="b" data-a="restart">Restart game</button><button class="b" data-a="close">Close</button></div>
@@ -120,9 +136,18 @@ body.lh #acts{right:auto;left:max(8px,env(safe-area-inset-left))}
 
 <div id="keys" class="hide"><div id="keyrows"></div></div>
 <div id="toast"></div>
+<div id="coach" class="hide"><div class="box">
+  <h2>Welcome, researcher!</h2>
+  <div class="tipline"><b>Tap</b> any button, or tap the map to walk there</div>
+  <div class="tipline"><b>Drag</b> on the map to walk, or drag a list to scroll it</div>
+  <div class="tipline"><b>Pinch</b> with two fingers to zoom</div>
+  <div class="tipline"><b>☰</b> (top right) has music, themes, backup and more</div>
+  <button id="coach-ok" class="b" style="aspect-ratio:auto;padding:12px 26px;margin-top:6px">Let's go</button>
+</div></div>
 
 <div id="rotate" class="hide"><div class="ph">📱</div><div>Turn your phone sideways<br>for the best view.</div><button id="rotateok" class="b" style="aspect-ratio:auto;padding:8px 18px">Play anyway</button></div>
 <div id="exit" class="hide"><div>Game closed.</div><button id="again" class="b" style="aspect-ratio:auto;padding:10px 22px">Play again</button><button id="quit" class="b hide" style="aspect-ratio:auto;padding:10px 22px">Close app</button></div>
+<script src="audio.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

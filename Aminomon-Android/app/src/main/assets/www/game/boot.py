@@ -69,7 +69,7 @@ def correr():
     def reproducir(nombre):
         notas = sonido.TONOS.get(nombre)
         if notas and ajustes.obtener("sonido"):
-            js.gvSound(json.dumps(notas))
+            js.gvSound(json.dumps({"n": nombre, "t": notas}))
     sonido.reproducir = reproducir
     _dedos_gordos()
     sonido.disponible = lambda: True

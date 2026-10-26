@@ -221,5 +221,7 @@ public class MainActivity extends Activity {
         return super.onKeyDown(code, e);
     }
 
+    @Override protected void onPause() { super.onPause(); if (web != null) web.onPause(); }
+    @Override protected void onResume() { super.onResume(); if (web != null) web.onResume(); }
     @Override protected void onDestroy() { if (web != null) web.destroy(); super.onDestroy(); }
 }
